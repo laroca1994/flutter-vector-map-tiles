@@ -56,22 +56,24 @@ class TileLoader {
       requestZoom = max(
           1, min(requestZoom + _tileOffset.zoomOffset, _provider.maximumZoom));
     }
-    final cached = await _imageCache.retrieve(requestedTile);
+    final upStep = int.tryParse(options.additionalOptions['up'] ?? '') ?? 0;
+    final cached = await _imageCache.retrieve(requestedTile, upStep);
     if (cached != null) {
       return ImageInfo(image: cached, scale: _scale);
     }
     final job = _TileJob(requestedTile, requestZoom,
-        options.tileDimension.toDouble(), cancelled);
+        options.tileDimension.toDouble(), cancelled, upStep);
     return _jobQueue.submit(Job<_TileJob, ImageInfo>(
-        'render $requestedTile', _renderJob, job,
-        deduplicationKey: 'render $requestedTile ${_theme.id}/$_sourcesKey'));
+        'render $requestedTile up$upStep', _renderJob, job,
+        deduplicationKey:
+            'render $requestedTile up$upStep ${_theme.id}/$_sourcesKey'));
   }
 
-  Future<ImageInfo> _renderJob(job) => _renderTile(
-      job.requestedTile, job.requestZoom, job.tileSize, job.cancelled);
+  Future<ImageInfo> _renderJob(job) => _renderTile(job.requestedTile,
+      job.requestZoom, job.tileSize, job.cancelled, job.upStep);
 
   Future<ImageInfo> _renderTile(TileIdentity requestedTile, int requestZoom,
-      double tileSize, bool Function() cancelled) async {
+      double tileSize, bool Function() cancelled, int upStep) async {
     if (cancelled()) {
       throw CancellationException();
     }
@@ -102,7 +104,7 @@ class TileLoader {
               zoom: requestedTile.z.toDouble(),
               zoomDetail: requestedTile.z.toDouble(),
               zoomScale: 0.0,
-              rotation: 0.0),
+              rotation: -upStep * pi / 4),
           translation: translation,
           tileset: tileset,
           rasterTileset: rasterTile,
@@ -122,17 +124,17 @@ class TileLoader {
       final picture = recorder.endRecording();
       final image =
           await picture.toImage(size.width.toInt(), size.height.toInt());
-      await _cache(translation.original, image);
+      await _cache(translation.original, image, upStep);
       return ImageInfo(image: image, scale: _scale);
     } finally {
       rasterTile.dispose();
     }
   }
 
-  Future<void> _cache(TileIdentity tile, Image image) async {
+  Future<void> _cache(TileIdentity tile, Image image, int upStep) async {
     Image cloned = image.clone();
     try {
-      await _imageCache.put(tile, cloned);
+      await _imageCache.put(tile, cloned, upStep);
     } catch (_) {
       // nothing to do
     } finally {
@@ -146,8 +148,10 @@ class _TileJob {
   final int requestZoom;
   final double tileSize;
   final bool Function() cancelled;
+  final int upStep;
 
-  _TileJob(this.requestedTile, this.requestZoom, this.tileSize, this.cancelled);
+  _TileJob(this.requestedTile, this.requestZoom, this.tileSize, this.cancelled,
+      this.upStep);
 }
 
 int _maxOutstandingJobs = 100;

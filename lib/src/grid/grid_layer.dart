@@ -32,6 +32,7 @@ import 'debounce.dart';
 import 'grid_tile_positioner.dart';
 import 'tile/disposable_state.dart';
 import 'tile_widgets.dart';
+import 'upright_step.dart';
 
 class VectorTileCompositeLayer extends StatefulWidget {
   final MapCamera mapCamera;
@@ -61,6 +62,7 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
   Theme? _theme;
   Theme? _symbolTheme;
   fm.TileProvider? _tileProvider;
+  int _upStep = 0;
 
   Theme get theme =>
       _theme ??
@@ -148,8 +150,13 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
               options.tileDelay,
               options.concurrency);
       _tileProvider = tileProvider;
+      // Labels are baked right side up for the map rotation in 45° steps.
+      // A new step changes the additional options, so TileLayer requests the
+      // tiles again in place, without removing the ones on screen.
+      _upStep = uprightStep(widget.mapCamera.rotationRad, _upStep);
       return TileLayer(
           key: Key("${theme.id}_v${theme.version}_VectorTileLayer"),
+          additionalOptions: {'up': '$_upStep'},
           maxZoom: maxZoom,
           maxNativeZoom: maxZoom.ceil(),
           evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,

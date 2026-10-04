@@ -16,8 +16,8 @@ class StorageImageCache {
         .replaceAll(RegExp(r'[^a-zA-Z0-9.-]'), '-');
   }
 
-  Future<Image?> retrieve(TileIdentity tile) async {
-    String key = _key(tile);
+  Future<Image?> retrieve(TileIdentity tile, [int upStep = 0]) async {
+    String key = _key(tile, upStep);
     final cached = await delegate.retrieve(key);
     if (cached != null) {
       final bytes = Uint8List.fromList(cached);
@@ -35,15 +35,17 @@ class StorageImageCache {
     return null;
   }
 
-  Future<void> put(TileIdentity tile, Image image) async {
+  Future<void> put(TileIdentity tile, Image image, [int upStep = 0]) async {
     final bytes = await image.toByteData(format: ImageByteFormat.png);
     if (bytes != null) {
-      await delegate.put(_key(tile), bytes.buffer.asUint8List());
+      await delegate.put(_key(tile, upStep), bytes.buffer.asUint8List());
     }
   }
 
-  String _key(TileIdentity tile) {
-    return '$themeKey-${tile.z}-${tile.x}-${tile.y}.png';
+  String _key(TileIdentity tile, int upStep) {
+    return upStep == 0
+        ? '$themeKey-${tile.z}-${tile.x}-${tile.y}.png'
+        : '$themeKey-${tile.z}-${tile.x}-${tile.y}-up$upStep.png';
   }
 
   Future _removeQuietly(String key) async {
