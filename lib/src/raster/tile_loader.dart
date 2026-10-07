@@ -14,6 +14,7 @@ import '../grid/tile_zoom.dart';
 import '../rendering/tile_renderer.dart';
 import '../stream/tile_supplier.dart';
 import '../stream/tile_supplier_raster.dart';
+import 'resubmit.dart';
 import 'storage_image_cache.dart';
 
 class TileLoader {
@@ -63,10 +64,15 @@ class TileLoader {
     }
     final job = _TileJob(requestedTile, requestZoom,
         options.tileDimension.toDouble(), cancelled, upStep);
-    return _jobQueue.submit(Job<_TileJob, ImageInfo>(
-        'render $requestedTile up$upStep', _renderJob, job,
-        deduplicationKey:
-            'render $requestedTile up$upStep ${_theme.id}/$_sourcesKey'));
+    // A tile dropped by the full queue must be asked for again: otherwise it
+    // stays blank while it is on screen.
+    return submitUntilDone(
+        _jobQueue,
+        () => Job<_TileJob, ImageInfo>(
+            'render $requestedTile up$upStep', _renderJob, job,
+            deduplicationKey:
+                'render $requestedTile up$upStep ${_theme.id}/$_sourcesKey'),
+        cancelled);
   }
 
   Future<ImageInfo> _renderJob(job) => _renderTile(job.requestedTile,
@@ -154,4 +160,6 @@ class _TileJob {
       this.upStep);
 }
 
-int _maxOutstandingJobs = 100;
+// A tilted map with labels baked for each 45° step asks for many more tiles
+// than a flat one: 100 dropped tiles near the camera.
+int _maxOutstandingJobs = 200;
