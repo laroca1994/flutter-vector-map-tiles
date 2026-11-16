@@ -1,3 +1,4 @@
+import 'package:flutter_map/flutter_map.dart' show TileUpdateTransformer;
 import 'package:vector_tile_renderer/vector_tile_renderer.dart';
 
 import 'io/io.dart';
@@ -28,6 +29,7 @@ class VectorTileLayerOptions {
   final VectorTileLayerMode layerMode;
   final double? maximumZoom;
   final Future<Directory> Function()? cacheFolder;
+  final TileUpdateTransformer? tileUpdateTransformer;
 
   VectorTileLayerOptions(vmt.VectorTileLayer layer)
       : controller = layer.controller,
@@ -49,7 +51,8 @@ class VectorTileLayerOptions {
         tileOffset = layer.tileOffset,
         layerMode = layer.layerMode,
         maximumZoom = layer.maximumZoom,
-        cacheFolder = layer.cacheFolder;
+        cacheFolder = layer.cacheFolder,
+        tileUpdateTransformer = layer.tileUpdateTransformer;
 
   bool hasRenderDifferences(VectorTileLayerOptions other) =>
       other.theme.id != theme.id ||

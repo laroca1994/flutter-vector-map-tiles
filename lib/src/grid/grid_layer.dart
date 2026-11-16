@@ -160,6 +160,7 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
           maxZoom: maxZoom,
           maxNativeZoom: maxZoom.ceil(),
           evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,
+          tileUpdateTransformer: options.tileUpdateTransformer,
           tileProvider: tileProvider);
     }
     final layers = <Widget>[];

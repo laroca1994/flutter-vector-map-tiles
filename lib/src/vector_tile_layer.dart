@@ -122,6 +122,15 @@ class VectorTileLayer extends StatelessWidget {
   /// this function.
   final Future<Directory> Function()? cacheFolder;
 
+  /// Decides when the map asks for tiles as it moves, for raster [layerMode]
+  /// only. Passed as is to flutter_map's `TileLayer.tileUpdateTransformer`;
+  /// when null, flutter_map's default applies.
+  ///
+  /// Raster tiles are painted on the UI thread, so asking for them on every
+  /// frame of a zoom gesture competes with the gesture itself. A transformer
+  /// can hold those requests until the zoom settles.
+  final TileUpdateTransformer? tileUpdateTransformer;
+
   VectorTileLayer(
       {super.key,
       this.controller,
@@ -143,7 +152,8 @@ class VectorTileLayer extends StatelessWidget {
       this.layerMode = VectorTileLayerMode.raster,
       this.maximumZoom,
       this.tileDelay = const Duration(milliseconds: 0),
-      this.cacheFolder}) {
+      this.cacheFolder,
+      this.tileUpdateTransformer}) {
     assert(concurrency >= 0 && concurrency <= 100);
     final providers = theme.tileSources
         .map((source) => tileProviders.tileProviderBySource[source])
