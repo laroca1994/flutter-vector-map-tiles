@@ -13,8 +13,10 @@ import '../stream/tileset_ui_preprocessor.dart';
 import 'future_tile_provider.dart';
 import 'storage_image_cache.dart';
 import 'tile_loader.dart';
+import 'tile_priority.dart';
 
-TileProvider createRasterTileProvider(
+/// The tile provider, and the focus its loader orders each batch by.
+(TileProvider, TileFocus) createRasterTileProvider(
     Theme theme,
     SpriteStyle? sprites,
     Caches caches,
@@ -25,7 +27,7 @@ TileProvider createRasterTileProvider(
     int concurrency) {
   final loader = createTileLoader(theme, sprites, caches, rasterTileProvider,
       executor, tileOffset, tileDelay, concurrency);
-  return FutureTileProvider(loader: loader.loadTile);
+  return (FutureTileProvider(loader: loader.loadTile), loader.focus);
 }
 
 TileLoader createTileLoader(

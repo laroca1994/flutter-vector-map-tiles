@@ -14,6 +14,7 @@ import '../vector_tile_controller.dart';
 import '../executors/shared_executor.dart';
 import '../options.dart';
 import '../raster/raster_tile_provider.dart';
+import '../raster/tile_priority.dart';
 import '../stream/caches_tile_provider.dart';
 import '../stream/delay_provider.dart';
 import '../stream/tile_processor.dart';
@@ -62,6 +63,7 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
   Theme? _theme;
   Theme? _symbolTheme;
   fm.TileProvider? _tileProvider;
+  TileFocus? _tileFocus;
   int _upStep = 0;
 
   /// Waits for the rotation to settle before taking a new label step. See
@@ -175,17 +177,27 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
     if (options.layerMode == VectorTileLayerMode.raster) {
       final maxZoom = options.maximumZoom ?? 18;
 
-      final tileProvider = _tileProvider ??
-          createRasterTileProvider(
-              theme,
-              widget.options.sprites,
-              _caches,
-              _rasterTileProvider,
-              _executor,
-              options.tileOffset,
-              options.tileDelay,
-              options.concurrency);
-      _tileProvider = tileProvider;
+      if (_tileProvider == null) {
+        final (provider, focus) = createRasterTileProvider(
+            theme,
+            widget.options.sprites,
+            _caches,
+            _rasterTileProvider,
+            _executor,
+            options.tileOffset,
+            options.tileDelay,
+            options.concurrency);
+        _tileProvider = provider;
+        _tileFocus = focus;
+      }
+      final tileProvider = _tileProvider!;
+      // Kept up to date on every build, which follows the camera: the loader
+      // reads it when flutter_map asks for the tiles of this camera.
+      final camera = widget.mapCamera;
+      final focusPoint = options.tileFocus.alongSize(camera.size);
+      _tileFocus!
+        ..at = camera.screenOffsetToLatLng(focusPoint)
+        ..crs = camera.crs;
       // Labels are baked right side up for the map rotation in 45° steps.
       // A new step changes the additional options, so TileLayer requests the
       // tiles again in place, without removing the ones on screen.

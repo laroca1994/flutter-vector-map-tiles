@@ -131,6 +131,17 @@ class VectorTileLayer extends StatelessWidget {
   /// can hold those requests until the zoom settles.
   final TileUpdateTransformer? tileUpdateTransformer;
 
+  /// Where on the layer the tiles that matter most are, for raster
+  /// [layerMode] only: within each batch, the nearest to this point load
+  /// first. Defaults to the centre.
+  ///
+  /// flutter_map orders a batch from the centre of the tile range outwards.
+  /// A layer that is laid out larger than what is seen —a map drawn tilted,
+  /// with the camera's point near the bottom of a tall, flat rectangle— wants
+  /// that point instead: the centre of the range is far away, near the
+  /// horizon, and the tiles under the camera would load last.
+  final Alignment tileFocus;
+
   VectorTileLayer(
       {super.key,
       this.controller,
@@ -153,7 +164,8 @@ class VectorTileLayer extends StatelessWidget {
       this.maximumZoom,
       this.tileDelay = const Duration(milliseconds: 0),
       this.cacheFolder,
-      this.tileUpdateTransformer}) {
+      this.tileUpdateTransformer,
+      this.tileFocus = Alignment.center}) {
     assert(concurrency >= 0 && concurrency <= 100);
     final providers = theme.tileSources
         .map((source) => tileProviders.tileProviderBySource[source])

@@ -17,6 +17,7 @@ import '../stream/tile_supplier.dart';
 import '../stream/tile_supplier_raster.dart';
 import 'resubmit.dart';
 import 'storage_image_cache.dart';
+import 'tile_priority.dart';
 
 class TileLoader {
   final Theme _theme;
@@ -30,7 +31,10 @@ class TileLoader {
   final TileOffset _tileOffset;
   final int _concurrency;
   final _scale = 2.0;
-  late final ConcurrencyExecutor _jobQueue;
+  late final RankedConcurrencyExecutor _jobQueue;
+
+  /// Where the tiles that matter most are. See [TileFocus].
+  final focus = TileFocus();
 
   TileLoader(
       this._theme,
@@ -43,7 +47,7 @@ class TileLoader {
       this._concurrency) {
     _themeSources = _theme.tileSources;
     _sourcesKey = _theme.tileSources.toList().sorted().join(',');
-    _jobQueue = ConcurrencyExecutor(
+    _jobQueue = RankedConcurrencyExecutor(
         delegate: ImmediateExecutor(),
         concurrencyLimit: _concurrency * 2,
         maxQueueSize: _maxOutstandingJobs);
@@ -62,9 +66,14 @@ class TileLoader {
     if (tileProbe) {
       _TileProbe.addAsked();
     }
+    // Taken now, in the order flutter_map asks: the nearest to the centre
+    // of the newest update goes first, in the pacer and in the queue.
+    final ticket = TileTicket.next(
+        distance: focus.distanceTo(requestedTile.x, requestedTile.y,
+            requestedTile.z, options.tileDimension.toDouble()));
     // A label step change asks for every visible tile at once; read and
     // decode them a few per frame instead of all in one.
-    await _framePacer.turn();
+    await _framePacer.turn(ticket);
     if (cancelled()) {
       throw CancellationException();
     }
@@ -77,7 +86,7 @@ class TileLoader {
     // A tile dropped by the full queue must be asked for again: otherwise it
     // stays blank while it is on screen.
     return submitUntilDone(
-        _jobQueue,
+        _jobQueue.ranked(ticket),
         () => Job<_TileJob, ImageInfo>(
             'render $requestedTile up$upStep', _renderJob, job,
             deduplicationKey:
@@ -282,18 +291,18 @@ class _FramePacer {
   _FramePacer({required this.perFrame});
 
   final int perFrame;
-  final _waiting = <Completer<void>>[];
+  final _waiting = <(TileTicket, Completer<void>)>[];
   var _scheduled = false;
   var _releasedThisFrame = 0;
 
-  Future<void> turn() {
+  Future<void> turn(TileTicket ticket) {
     if (!_scheduled && _releasedThisFrame < perFrame) {
       _releasedThisFrame++;
       _schedule();
       return Future.value();
     }
     final done = Completer<void>();
-    _waiting.add(done);
+    _waiting.add((ticket, done));
     _schedule();
     return done.future;
   }
@@ -306,11 +315,11 @@ class _FramePacer {
     SchedulerBinding.instance.scheduleFrameCallback((_) {
       _scheduled = false;
       _releasedThisFrame = 0;
-      // The newest first, like the render queue: the last asked for is
-      // the most likely to still be on screen.
+      // In ticket order, like the render queue: the newest update first,
+      // and within it the nearest to the centre (see [TileTicket]).
       while (_waiting.isNotEmpty && _releasedThisFrame < perFrame) {
         _releasedThisFrame++;
-        _waiting.removeLast().complete();
+        _waiting.removeAt(firstInLine(_waiting, (w) => w.$1)).$2.complete();
       }
       if (_waiting.isNotEmpty) {
         _schedule();
