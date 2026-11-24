@@ -73,14 +73,19 @@ class TileLoader {
         cancelled: cancelled);
     // A label step change asks for every visible tile at once; read and
     // decode them a few per frame instead of all in one.
+    final asked = tileProbe ? (Stopwatch()..start()) : null;
     await _framePacer.turn(ticket);
+    _Stages.lap(asked, 'turno');
     if (cancelled()) {
       throw CancellationException();
     }
     final cached = await _imageCache.retrieve(requestedTile, upStep);
+    _Stages.lap(asked, 'guardada');
     if (cached != null) {
+      _Stages.count('acierto');
       return ImageInfo(image: cached, scale: _scale);
     }
+    _Stages.count('falla');
     final job = _TileJob(requestedTile, requestZoom,
         options.tileDimension.toDouble(), cancelled, upStep);
     // A tile dropped by the full queue must be asked for again: otherwise it
@@ -94,8 +99,22 @@ class TileLoader {
         cancelled);
   }
 
-  Future<ImageInfo> _renderJob(job) => _renderTile(job.requestedTile,
-      job.requestZoom, job.tileSize, job.cancelled, job.upStep);
+  Future<ImageInfo> _renderJob(job) async {
+    _Stages.lap(job.queued, 'cola');
+    final slot = tileProbe ? (Stopwatch()..start()) : null;
+    try {
+      final info = await _renderTile(job.requestedTile, job.requestZoom,
+          job.tileSize, job.cancelled, job.upStep);
+      _Stages.lap(slot, 'puesto_ok');
+      return info;
+    } on CancellationException {
+      _Stages.lap(slot, 'puesto_cancelada');
+      rethrow;
+    } catch (_) {
+      _Stages.lap(slot, 'puesto_error');
+      rethrow;
+    }
+  }
 
   Future<ImageInfo> _renderTile(TileIdentity requestedTile, int requestZoom,
       double tileSize, bool Function() cancelled, int upStep) async {
@@ -108,12 +127,14 @@ class TileLoader {
         zoom: requestedTile.z.toDouble(),
         zoomDetail: requestedTile.z.toDouble(),
         cancelled: cancelled);
+    final stage = tileProbe ? (Stopwatch()..start()) : null;
     final spriteAtlas = await _spriteAtlas?.call();
     final tileResponseFuture = _provider.provide(tileRequest);
     final rasterTile = await _rasterTileProvider
         .retrieve(requestedTile.normalize(), skipMissing: true);
     try {
       final tileResponse = await tileResponseFuture;
+      _Stages.lap(stage, 'datos');
       final tileset = tileResponse.tileset;
       if (tileset == null) {
         throw 'No tile: $requestedTile';
@@ -152,23 +173,55 @@ class TileLoader {
         _TileProbe.add(watch.elapsedMicroseconds, upStep,
             '${requestedTile.z}/${requestedTile.x}/${requestedTile.y}/$upStep');
       }
+      _Stages.lap(stage, 'dibujo');
       final image =
           await picture.toImage(size.width.toInt(), size.height.toInt());
-      await _cache(translation.original, image, upStep);
+      _Stages.lap(stage, 'imagen');
+      // Shown now and stored after: see [_storeLater].
+      _storeLater(translation.original, image, upStep);
       return ImageInfo(image: image, scale: _scale);
     } finally {
       rasterTile.dispose();
     }
   }
 
-  Future<void> _cache(TileIdentity tile, Image image, int upStep) async {
-    Image cloned = image.clone();
+  /// **A drawn tile is stored after it is shown, one at a time.** Storing
+  /// encodes it as a PNG, and on a low-end phone that took 250–950 ms a tile
+  /// (up to 6 s queued behind others): with the tile waiting for it, a
+  /// tilted map filled at a dozen tiles a second even with the map
+  /// downloaded, and every tile held a render slot the whole time. It is
+  /// only a cache, so past [_maxPendingStores] the oldest waiting are
+  /// skipped: they get drawn again if they are ever asked for.
+  final _pendingStores = <(TileIdentity, Image, int)>[];
+  var _storing = false;
+
+  void _storeLater(TileIdentity tile, Image image, int upStep) {
+    _pendingStores.add((tile, image.clone(), upStep));
+    while (_pendingStores.length > _maxPendingStores) {
+      _pendingStores.removeAt(0).$2.dispose();
+    }
+    if (!_storing) {
+      unawaited(_storePending());
+    }
+  }
+
+  Future<void> _storePending() async {
+    _storing = true;
     try {
-      await _imageCache.put(tile, cloned, upStep);
-    } catch (_) {
-      // nothing to do
+      while (_pendingStores.isNotEmpty) {
+        final (tile, image, upStep) = _pendingStores.removeLast();
+        final watch = tileProbe ? (Stopwatch()..start()) : null;
+        try {
+          await _imageCache.put(tile, image, upStep);
+        } catch (_) {
+          // nothing to do
+        } finally {
+          image.dispose();
+        }
+        _Stages.lap(watch, 'guardar');
+      }
     } finally {
-      cloned.dispose();
+      _storing = false;
     }
   }
 }
@@ -180,6 +233,9 @@ class _TileJob {
   final bool Function() cancelled;
   final int upStep;
 
+  /// Since it went into the queue, for the probe ([_Stages]).
+  final Stopwatch? queued = tileProbe ? (Stopwatch()..start()) : null;
+
   _TileJob(this.requestedTile, this.requestZoom, this.tileSize, this.cancelled,
       this.upStep);
 }
@@ -187,6 +243,9 @@ class _TileJob {
 // A tilted map with labels baked for each 45° step asks for many more tiles
 // than a flat one: 100 dropped tiles near the camera.
 int _maxOutstandingJobs = 200;
+
+/// How many drawn tiles may wait to be stored. See `TileLoader._storeLater`.
+const _maxPendingStores = 48;
 
 /// Whether to log how long drawing each raster tile takes on the main
 /// isolate: `--dart-define=TILE_PROBE=true`.
@@ -328,6 +387,51 @@ class _FramePacer {
       if (_waiting.isNotEmpty) {
         _schedule();
       }
+    });
+  }
+}
+
+/// **Where a raster tile's time goes** (`TILE_PROBE`, 24-11): per second, the
+/// mean and worst of each stage in ms —waiting for a turn, the stored image,
+/// the queue, the data, drawing, the GPU image, storing it— and how many
+/// tiles were found stored and how many had to be drawn.
+class _Stages {
+  static final Map<String, (int, int, int)> _laps = {};
+  static final Map<String, int> _counts = {};
+  static Timer? _timer;
+
+  static void lap(Stopwatch? watch, String name) {
+    if (watch == null) {
+      return;
+    }
+    final ms = watch.elapsedMilliseconds;
+    watch.reset();
+    final (n, sum, worst) = _laps[name] ?? (0, 0, 0);
+    _laps[name] = (n + 1, sum + ms, ms > worst ? ms : worst);
+    _start();
+  }
+
+  static void count(String name) {
+    if (!tileProbe) {
+      return;
+    }
+    _counts[name] = (_counts[name] ?? 0) + 1;
+    _start();
+  }
+
+  static void _start() {
+    _timer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_laps.isEmpty && _counts.isEmpty) {
+        return;
+      }
+      final laps = [
+        for (final e in _laps.entries)
+          '${e.key}=${e.value.$2 ~/ e.value.$1}/${e.value.$3}',
+      ];
+      final counts = [for (final e in _counts.entries) '${e.key}=${e.value}'];
+      debugPrint('[etapas] ${[...counts, ...laps].join(' ')}');
+      _laps.clear();
+      _counts.clear();
     });
   }
 }
