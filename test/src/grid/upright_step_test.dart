@@ -15,17 +15,17 @@ void main() {
       expect(uprightStep(-180 * deg, 2), 4);
     });
 
-    test('keeps the previous step up to 5° past the halfway point', () {
+    test('keeps the previous step up to 15° past the halfway point', () {
       expect(uprightStep(22.6 * deg, 0), 0);
-      expect(uprightStep(27.4 * deg, 0), 0);
-      expect(uprightStep(-27.4 * deg, 0), 0);
-      expect(uprightStep(17.6 * deg, 1), 1);
+      expect(uprightStep(37.4 * deg, 0), 0);
+      expect(uprightStep(-37.4 * deg, 0), 0);
+      expect(uprightStep(7.6 * deg, 1), 1);
     });
 
     test('takes the next step once past the margin', () {
-      expect(uprightStep(27.6 * deg, 0), 1);
-      expect(uprightStep(-27.6 * deg, 0), 7);
-      expect(uprightStep(17.4 * deg, 1), 0);
+      expect(uprightStep(37.6 * deg, 0), 1);
+      expect(uprightStep(-37.6 * deg, 0), 7);
+      expect(uprightStep(7.4 * deg, 1), 0);
     });
 
     test('measures the distance across a full turn', () {

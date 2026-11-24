@@ -122,12 +122,17 @@ class TileLoader {
       if (cancelled()) {
         throw CancellationException();
       }
+      final watch = tileProbe ? (Stopwatch()..start()) : null;
       final recorder = PictureRecorder();
       final canvas = Canvas(recorder, rect);
       canvas.scale(_scale);
       renderer.render(canvas, size / _scale);
 
       final picture = recorder.endRecording();
+      if (watch != null) {
+        _TileProbe.add(watch.elapsedMicroseconds, upStep,
+            '${requestedTile.z}/${requestedTile.x}/${requestedTile.y}/$upStep');
+      }
       final image =
           await picture.toImage(size.width.toInt(), size.height.toInt());
       await _cache(translation.original, image, upStep);
@@ -163,3 +168,68 @@ class _TileJob {
 // A tilted map with labels baked for each 45° step asks for many more tiles
 // than a flat one: 100 dropped tiles near the camera.
 int _maxOutstandingJobs = 200;
+
+/// Whether to log how long drawing each raster tile takes on the main
+/// isolate: `--dart-define=TILE_PROBE=true`.
+const bool tileProbe = bool.fromEnvironment('TILE_PROBE');
+
+/// Once a second, how many raster tiles were drawn, the slowest and the
+/// total time spent drawing them on the main isolate, and which label
+/// rotation steps they were for.
+/// How long sending a tileset to the preprocessing isolate took on the main
+/// isolate, for [_TileProbe].
+void tileProbeSend(int sendMicros, int _) => _TileProbe.addSend(sendMicros);
+
+class _TileProbe {
+  static int _sends = 0;
+  static int _sendTotal = 0;
+  static int _sendWorst = 0;
+
+  static void addSend(int micros) {
+    _sends++;
+    _sendTotal += micros;
+    _sendWorst = max(_sendWorst, micros);
+    _timer ??= Timer(const Duration(seconds: 1), _flush);
+  }
+
+  static int _count = 0;
+  static int _worst = 0;
+  static int _total = 0;
+  static final Set<int> _steps = {};
+  static Timer? _timer;
+
+  static final Set<String> _ever = {};
+  static int _again = 0;
+  static final Set<int> _zooms = {};
+
+  static void add(int micros, int upStep, String key) {
+    _count++;
+    if (!_ever.add(key)) {
+      _again++;
+    }
+    _zooms.add(int.parse(key.split('/').first));
+    _total += micros;
+    _worst = max(_worst, micros);
+    _steps.add(upStep);
+    _timer ??= Timer(const Duration(seconds: 1), _flush);
+  }
+
+  static void _flush() {
+    _timer = null;
+    // ignore: avoid_print
+    print('[teselas] n=$_count peor=${_worst ~/ 1000} '
+        'suma=${_total ~/ 1000} giros=${_steps.toList()..sort()} '
+        'repetidas=$_again z=${_zooms.toList()..sort()} '
+        'envios=$_sends envio_peor=${_sendWorst ~/ 1000} '
+        'envio_suma=${_sendTotal ~/ 1000}');
+    _sends = 0;
+    _sendTotal = 0;
+    _sendWorst = 0;
+    _again = 0;
+    _zooms.clear();
+    _count = 0;
+    _worst = 0;
+    _total = 0;
+    _steps.clear();
+  }
+}

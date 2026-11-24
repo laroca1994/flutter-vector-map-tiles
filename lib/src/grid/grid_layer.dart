@@ -64,6 +64,11 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
   fm.TileProvider? _tileProvider;
   int _upStep = 0;
 
+  /// Waits for the rotation to settle before taking a new label step. See
+  /// [_followUpright].
+  Timer? _stepSettle;
+  double? _lastRotation;
+
   Theme get theme =>
       _theme ??
       (_theme = widget.options.layerMode == VectorTileLayerMode.raster
@@ -97,6 +102,7 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
 
   @override
   void dispose() {
+    _stepSettle?.cancel();
     detachController(widget.options.controller);
     super.dispose();
     _subscription?.cancel();
@@ -132,6 +138,36 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
     }
   }
 
+  /// **A new label step only once the rotation settles.** A step change
+  /// renders every visible tile again —on a tilted map, a hundred or more—
+  /// and swaps them all in one frame. Taken while the map is still turning,
+  /// a 90° turn took two steps, each one mid-gesture; taken once the
+  /// rotation has stopped for [_stepSettleDelay], it takes one, with the map
+  /// still.
+  void _followUpright(double rotation) {
+    if (uprightStep(rotation, _upStep) == _upStep) {
+      _stepSettle?.cancel();
+      _stepSettle = null;
+      _lastRotation = rotation;
+      return;
+    }
+    if (rotation == _lastRotation && _stepSettle != null) {
+      return;
+    }
+    _lastRotation = rotation;
+    _stepSettle?.cancel();
+    _stepSettle = Timer(_stepSettleDelay, () {
+      _stepSettle = null;
+      if (!mounted) {
+        return;
+      }
+      final step = uprightStep(widget.mapCamera.rotationRad, _upStep);
+      if (step != _upStep) {
+        setState(() => _upStep = step);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final options = widget.options;
@@ -153,13 +189,17 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
       // Labels are baked right side up for the map rotation in 45° steps.
       // A new step changes the additional options, so TileLayer requests the
       // tiles again in place, without removing the ones on screen.
-      _upStep = uprightStep(widget.mapCamera.rotationRad, _upStep);
+      _followUpright(widget.mapCamera.rotationRad);
       return TileLayer(
           key: Key("${theme.id}_v${theme.version}_VectorTileLayer"),
           additionalOptions: {'up': '$_upStep'},
           maxZoom: maxZoom,
           maxNativeZoom: maxZoom.ceil(),
           evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,
+          // No fade: on a tilted map dozens of tiles arrive per second, each
+          // fading in over several frames behind its own opacity layer, and
+          // a label step change swaps every visible tile at once.
+          tileDisplay: const TileDisplay.instantaneous(),
           tileUpdateTransformer: options.tileUpdateTransformer,
           tileProvider: tileProvider);
     }
@@ -534,3 +574,5 @@ extension _MapStateExtension on MapCamera {
   _MapState toMapState() => _MapState(
       zoom, rotation, pixelOrigin, center, size, visibleBounds, pixelBounds);
 }
+
+const _stepSettleDelay = Duration(milliseconds: 400);

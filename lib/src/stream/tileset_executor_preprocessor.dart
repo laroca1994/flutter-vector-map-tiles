@@ -6,6 +6,7 @@ import 'package:vector_tile_renderer/vector_tile_renderer.dart';
 
 import '../../vector_map_tiles.dart';
 import '../extensions.dart';
+import '../raster/tile_loader.dart' show tileProbe, tileProbeSend;
 
 class TilesetExecutorPreprocessor {
   final TilesetPreprocessor _preprocessor;
@@ -35,9 +36,18 @@ class TilesetExecutorPreprocessor {
     }
     final deduplicationKey =
         'preprocess: $identity clip=$clip zoom=$zoom sources=${tileset.tiles.keys.toList().sorted().join(',')}';
-    final preprocessed = await _executor.submit(Job(deduplicationKey,
-        _preprocessTile, _TilesetAndZoom(_preprocessor.theme.id, tileset, zoom),
+    final watch = tileProbe ? (Stopwatch()..start()) : null;
+    final future = _executor.submit(Job(deduplicationKey, _preprocessTile,
+        _TilesetAndZoom(_preprocessor.theme.id, tileset, zoom),
         cancelled: cancelled, deduplicationKey: deduplicationKey));
+    final sent = watch?.elapsedMicroseconds;
+    final preprocessed = await future;
+    if (watch != null) {
+      // Lo que sigue a la vuelta, ya en el hilo principal.
+      final back = Stopwatch()..start();
+      await Future<void>.value();
+      tileProbeSend(sent!, back.elapsedMicroseconds);
+    }
     return preprocessed;
   }
 }
