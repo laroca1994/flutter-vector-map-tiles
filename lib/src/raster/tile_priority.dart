@@ -1,61 +1,47 @@
 import 'dart:async';
+import 'dart:ui' show Offset;
 
 import 'package:executor_lib/executor_lib.dart';
 import 'package:flutter_map/flutter_map.dart' show Crs;
 import 'package:latlong2/latlong.dart';
 
-/// **Where a raster tile request stands in line.**
+/// **A raster tile request waiting for its turn.**
 ///
-/// flutter_map asks for the tiles of one camera update all at once, already
-/// sorted from the centre of the view outwards. Two things matter, in this
-/// order:
+/// Its place in line is decided **when a turn comes up, not when it was
+/// asked for**: the tile nearest to where the [focus] is *now* goes first,
+/// whichever camera update asked for it, and between two equally near the
+/// newer one. Deciding it at request time let a tile still on screen sit at
+/// the back for as long as newer updates kept coming —which a map following
+/// a bus does several times a second— until a hand moved the map.
 ///
-/// 1. **The newest update first**: what was asked for last is the most likely
-///    to still be on screen (the reason the queues used to be LIFO).
-/// 2. **Within one update, the nearest to the [TileFocus] first**, and then
-///    the order it was asked in — flutter_map's, from the centre of the range
-///    outwards. A plain LIFO queue ran each update backwards — the corner
-///    tiles first and the one under the user last.
-///
-/// An update is every request made before the event loop turns: flutter_map
-/// asks for them in one synchronous pass.
-class TileTicket implements Comparable<TileTicket> {
-  const TileTicket._(this.batch, this.distance, this.order);
+/// Without a focus yet, the newest goes first, as the queues always did.
+class TileTicket {
+  TileTicket(this.x, this.y, this.z, this.tileSize, this.focus,
+      {bool Function()? cancelled})
+      : order = _next++,
+        cancelled = cancelled ?? _never;
 
-  final int batch;
+  final int x;
+  final int y;
+  final int z;
+  final double tileSize;
+  final TileFocus focus;
 
-  /// From the focus, in tiles squared; 0 without a focus.
-  final double distance;
+  /// Whether the tile is no longer wanted: it leaves the line at the next
+  /// turn, before anything is picked.
+  final bool Function() cancelled;
+
+  /// The order it was asked in: higher is newer.
   final int order;
 
-  static int _batch = 0;
-  static int _order = 0;
-  static bool _open = false;
-
-  /// The ticket of a request made now, [distance] from the focus.
-  factory TileTicket.next({double distance = 0}) {
-    if (!_open) {
-      _open = true;
-      _batch++;
-      _order = 0;
-      scheduleMicrotask(() => _open = false);
-    }
-    return TileTicket._(_batch, distance, _order++);
-  }
-
-  /// Negative when this one goes before [other].
-  @override
-  int compareTo(TileTicket other) => batch != other.batch
-      ? other.batch.compareTo(batch)
-      : distance != other.distance
-          ? distance.compareTo(other.distance)
-          : order.compareTo(other.order);
+  static int _next = 0;
+  static bool _never() => false;
 }
 
 /// **The point the tiles load around** (`VectorTileLayer.tileFocus`), kept
-/// by the layer as the camera moves and read by the loader when a tile is
-/// asked for. It is not a tile option: changing one makes flutter_map ask
-/// for every tile again.
+/// by the layer as the camera moves and read every time a turn comes up. It
+/// is not a tile option: changing one makes flutter_map ask for every tile
+/// again.
 class TileFocus {
   LatLng? at;
   Crs? crs;
@@ -75,25 +61,56 @@ class TileFocus {
   }
 }
 
-/// The index of the entry of [entries] that goes first, by [ticketOf]; `-1`
-/// when there is none.
-int firstInLine<T>(List<T> entries, TileTicket Function(T) ticketOf) {
+double _distanceOf(TileTicket t) =>
+    t.focus.distanceTo(t.x, t.y, t.z, t.tileSize);
+
+/// Whether [a], [da] from its focus, goes before [b], [db] from its own.
+bool _before(TileTicket a, double da, TileTicket b, double db) =>
+    da != db ? da < db : a.order > b.order;
+
+/// **Takes the cancelled out of [entries]** —each one handed to [drop]— and
+/// returns the index of the one that goes first now, or `-1` if none is
+/// left.
+int takeTurn<T>(
+    List<T> entries, TileTicket Function(T) ticketOf, void Function(T) drop) {
+  for (var i = entries.length - 1; i >= 0; i--) {
+    if (ticketOf(entries[i]).cancelled()) {
+      drop(entries.removeAt(i));
+    }
+  }
   var best = -1;
+  var bestDistance = 0.0;
   for (var i = 0; i < entries.length; i++) {
-    if (best < 0 ||
-        ticketOf(entries[i]).compareTo(ticketOf(entries[best])) < 0) {
+    final t = ticketOf(entries[i]);
+    final d = _distanceOf(t);
+    if (best < 0 || _before(t, d, ticketOf(entries[best]), bestDistance)) {
       best = i;
+      bestDistance = d;
     }
   }
   return best;
 }
 
+/// The index of the entry of [entries] that goes last now; `-1` when empty.
+int lastInLine<T>(List<T> entries, TileTicket Function(T) ticketOf) {
+  var worst = -1;
+  var worstDistance = 0.0;
+  for (var i = 0; i < entries.length; i++) {
+    final t = ticketOf(entries[i]);
+    final d = _distanceOf(t);
+    if (worst < 0 || _before(ticketOf(entries[worst]), worstDistance, t, d)) {
+      worst = i;
+      worstDistance = d;
+    }
+  }
+  return worst;
+}
+
 /// **A [ConcurrencyExecutor] that runs by [TileTicket]** instead of LIFO.
 ///
 /// Same contract otherwise: at most [concurrencyLimit] jobs at once, and past
-/// [maxQueueSize] the jobs that go **last** in line are completed with a
-/// [CancellationException] (the old executor dropped the oldest, which on a
-/// fresh update were the nearest to the centre).
+/// [maxQueueSize] the cancelled go first and then the one that goes **last**
+/// in line, completed with a [CancellationException].
 class RankedConcurrencyExecutor extends ExecutorDelegate {
   RankedConcurrencyExecutor({
     required this.delegate,
@@ -127,7 +144,8 @@ class RankedConcurrencyExecutor extends ExecutorDelegate {
   }
 
   @override
-  Future<R> submit<Q, R>(Job<Q, R> job) => submitRanked(job, TileTicket.next());
+  Future<R> submit<Q, R>(Job<Q, R> job) =>
+      submitRanked(job, TileTicket(0, 0, 0, 256, TileFocus()));
 
   @override
   List<Future<R>> submitAll<Q, R>(Job<Q, R> job) => delegate.submitAll(job);
@@ -142,20 +160,28 @@ class RankedConcurrencyExecutor extends ExecutorDelegate {
   bool get disposed => delegate.disposed;
 
   void _startJobs() {
-    while (_inProgress < concurrencyLimit && _queue.isNotEmpty) {
-      _startJob(_queue.removeAt(firstInLine(_queue, (j) => j.ticket)));
+    while (_inProgress < concurrencyLimit) {
+      final next = takeTurn(_queue, (j) => j.ticket, (j) => j.cancel());
+      if (next < 0) {
+        return;
+      }
+      _startJob(_queue.removeAt(next));
     }
   }
 
   void _applyQueueLimit() {
-    while (_queue.length > maxQueueSize || (disposed && _queue.isNotEmpty)) {
-      var last = 0;
-      for (var i = 1; i < _queue.length; i++) {
-        if (_queue[i].ticket.compareTo(_queue[last].ticket) > 0) {
-          last = i;
-        }
+    if (_queue.length <= maxQueueSize && !disposed) {
+      return;
+    }
+    _queue.removeWhere((j) {
+      final gone = j.ticket.cancelled();
+      if (gone) {
+        j.cancel();
       }
-      _queue.removeAt(last).cancel();
+      return gone;
+    });
+    while (_queue.length > maxQueueSize || (disposed && _queue.isNotEmpty)) {
+      _queue.removeAt(lastInLine(_queue, (j) => j.ticket)).cancel();
     }
   }
 

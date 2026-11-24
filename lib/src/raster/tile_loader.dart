@@ -66,11 +66,11 @@ class TileLoader {
     if (tileProbe) {
       _TileProbe.addAsked();
     }
-    // Taken now, in the order flutter_map asks: the nearest to the centre
-    // of the newest update goes first, in the pacer and in the queue.
-    final ticket = TileTicket.next(
-        distance: focus.distanceTo(requestedTile.x, requestedTile.y,
-            requestedTile.z, options.tileDimension.toDouble()));
+    // Its place in line is worked out at every turn, against where the
+    // focus is then: in the pacer and in the queue (see [TileTicket]).
+    final ticket = TileTicket(requestedTile.x, requestedTile.y, requestedTile.z,
+        options.tileDimension.toDouble(), focus,
+        cancelled: cancelled);
     // A label step change asks for every visible tile at once; read and
     // decode them a few per frame instead of all in one.
     await _framePacer.turn(ticket);
@@ -315,11 +315,15 @@ class _FramePacer {
     SchedulerBinding.instance.scheduleFrameCallback((_) {
       _scheduled = false;
       _releasedThisFrame = 0;
-      // In ticket order, like the render queue: the newest update first,
-      // and within it the nearest to the centre (see [TileTicket]).
-      while (_waiting.isNotEmpty && _releasedThisFrame < perFrame) {
+      // In ticket order, like the render queue: the nearest to the focus
+      // now (see [TileTicket]). The cancelled leave without using a turn.
+      while (_releasedThisFrame < perFrame) {
+        final next = takeTurn(_waiting, (w) => w.$1, (w) => w.$2.complete());
+        if (next < 0) {
+          break;
+        }
         _releasedThisFrame++;
-        _waiting.removeAt(firstInLine(_waiting, (w) => w.$1)).$2.complete();
+        _waiting.removeAt(next).$2.complete();
       }
       if (_waiting.isNotEmpty) {
         _schedule();
