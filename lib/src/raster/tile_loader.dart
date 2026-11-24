@@ -261,6 +261,12 @@ void tileProbeSend(int sendMicros, int _) => _TileProbe.addSend(sendMicros);
 /// How long the geometry of a tileset took to set up on the main isolate.
 void tileProbeUi(int micros) => _TileProbe.addUi(micros);
 
+/// One stage of a tile's data, for the `[etapas]` line (see [_Stages]).
+void tileProbeLap(Stopwatch? watch, String name) => _Stages.lap(watch, name);
+
+/// One more of [name], for the `[etapas]` line.
+void tileProbeCount(String name) => _Stages.count(name);
+
 class _TileProbe {
   static int _uis = 0;
   static int _uiTotal = 0;
