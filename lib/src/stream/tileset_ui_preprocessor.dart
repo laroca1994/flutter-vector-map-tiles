@@ -6,6 +6,7 @@ import 'package:vector_tile_renderer/vector_tile_renderer.dart';
 
 import '../../vector_map_tiles.dart';
 import '../extensions.dart';
+import '../raster/tile_loader.dart' show tileProbe, tileProbeUi;
 
 class TilesetUiPreprocessor {
   final TilesetPreprocessor _preprocessor;
@@ -23,7 +24,13 @@ class TilesetUiPreprocessor {
   }
 
   Tileset _preprocessTile(_TilesetAndZoom job) {
-    return _preprocessor.preprocess(job.tileset, zoom: job.zoom.toDouble());
+    final watch = tileProbe ? (Stopwatch()..start()) : null;
+    final out =
+        _preprocessor.preprocess(job.tileset, zoom: job.zoom.toDouble());
+    if (watch != null) {
+      tileProbeUi(watch.elapsedMicroseconds);
+    }
+    return out;
   }
 }
 

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:executor_lib/executor_lib.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart' hide Image;
 import 'package:flutter_map/flutter_map.dart' hide TileProvider;
 import 'package:vector_tile_renderer/vector_tile_renderer.dart' hide TileLayer;
@@ -58,6 +59,15 @@ class TileLoader {
           1, min(requestZoom + _tileOffset.zoomOffset, _provider.maximumZoom));
     }
     final upStep = int.tryParse(options.additionalOptions['up'] ?? '') ?? 0;
+    if (tileProbe) {
+      _TileProbe.addAsked();
+    }
+    // A label step change asks for every visible tile at once; read and
+    // decode them a few per frame instead of all in one.
+    await _framePacer.turn();
+    if (cancelled()) {
+      throw CancellationException();
+    }
     final cached = await _imageCache.retrieve(requestedTile, upStep);
     if (cached != null) {
       return ImageInfo(image: cached, scale: _scale);
@@ -180,7 +190,28 @@ const bool tileProbe = bool.fromEnvironment('TILE_PROBE');
 /// isolate, for [_TileProbe].
 void tileProbeSend(int sendMicros, int _) => _TileProbe.addSend(sendMicros);
 
+/// How long the geometry of a tileset took to set up on the main isolate.
+void tileProbeUi(int micros) => _TileProbe.addUi(micros);
+
 class _TileProbe {
+  static int _uis = 0;
+  static int _uiTotal = 0;
+  static int _uiWorst = 0;
+
+  static int _asked = 0;
+
+  static void addAsked() {
+    _asked++;
+    _timer ??= Timer(const Duration(seconds: 1), _flush);
+  }
+
+  static void addUi(int micros) {
+    _uis++;
+    _uiTotal += micros;
+    _uiWorst = max(_uiWorst, micros);
+    _timer ??= Timer(const Duration(seconds: 1), _flush);
+  }
+
   static int _sends = 0;
   static int _sendTotal = 0;
   static int _sendWorst = 0;
@@ -221,7 +252,13 @@ class _TileProbe {
         'suma=${_total ~/ 1000} giros=${_steps.toList()..sort()} '
         'repetidas=$_again z=${_zooms.toList()..sort()} '
         'envios=$_sends envio_peor=${_sendWorst ~/ 1000} '
-        'envio_suma=${_sendTotal ~/ 1000}');
+        'envio_suma=${_sendTotal ~/ 1000} '
+        'geom=$_uis geom_peor=${_uiWorst ~/ 1000} '
+        'geom_suma=${_uiTotal ~/ 1000} pedidas=$_asked');
+    _asked = 0;
+    _uis = 0;
+    _uiTotal = 0;
+    _uiWorst = 0;
     _sends = 0;
     _sendTotal = 0;
     _sendWorst = 0;
@@ -231,5 +268,53 @@ class _TileProbe {
     _worst = 0;
     _total = 0;
     _steps.clear();
+  }
+}
+
+final _framePacer = _FramePacer(perFrame: 6);
+
+/// **Lets a few raster tile loads through per frame.** A tilted map has a
+/// couple of hundred tiles in play, and a label step change reloads every one
+/// of them in the same frame: each one read from storage and decoded at
+/// once, one long stall in the middle of a turn. Paced, they arrive over a
+/// fraction of a second, and the old tile stays on screen meanwhile.
+class _FramePacer {
+  _FramePacer({required this.perFrame});
+
+  final int perFrame;
+  final _waiting = <Completer<void>>[];
+  var _scheduled = false;
+  var _releasedThisFrame = 0;
+
+  Future<void> turn() {
+    if (!_scheduled && _releasedThisFrame < perFrame) {
+      _releasedThisFrame++;
+      _schedule();
+      return Future.value();
+    }
+    final done = Completer<void>();
+    _waiting.add(done);
+    _schedule();
+    return done.future;
+  }
+
+  void _schedule() {
+    if (_scheduled) {
+      return;
+    }
+    _scheduled = true;
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      _scheduled = false;
+      _releasedThisFrame = 0;
+      // The newest first, like the render queue: the last asked for is
+      // the most likely to still be on screen.
+      while (_waiting.isNotEmpty && _releasedThisFrame < perFrame) {
+        _releasedThisFrame++;
+        _waiting.removeLast().complete();
+      }
+      if (_waiting.isNotEmpty) {
+        _schedule();
+      }
+    });
   }
 }
