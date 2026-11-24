@@ -43,18 +43,31 @@ class TileTicket {
 /// is not a tile option: changing one makes flutter_map ask for every tile
 /// again.
 class TileFocus {
-  LatLng? at;
+  LatLng? _at;
   Crs? crs;
+
+  /// The focus projected per zoom and tile size: every turn measures every
+  /// waiting tile against it, and it only changes when [at] does.
+  final Map<(int, double), Offset> _projected = {};
+
+  LatLng? get at => _at;
+  set at(LatLng? value) {
+    if (value != _at) {
+      _at = value;
+      _projected.clear();
+    }
+  }
 
   /// How far the tile [x], [y] at [z] is from the focus, in tiles squared;
   /// 0 without a focus.
   double distanceTo(int x, int y, int z, double tileSize) {
-    final at = this.at;
+    final at = _at;
     final crs = this.crs;
     if (at == null || crs == null) {
       return 0;
     }
-    final focus = crs.latLngToOffset(at, z.toDouble()) / tileSize;
+    final focus = _projected.putIfAbsent(
+        (z, tileSize), () => crs.latLngToOffset(at, z.toDouble()) / tileSize);
     final dx = x + 0.5 - focus.dx;
     final dy = y + 0.5 - focus.dy;
     return dx * dx + dy * dy;

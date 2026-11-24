@@ -194,10 +194,16 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
       // Kept up to date on every build, which follows the camera: the loader
       // reads it when flutter_map asks for the tiles of this camera.
       final camera = widget.mapCamera;
-      final focusPoint = options.tileFocus.alongSize(camera.size);
+      final at = options.tileFocusAt;
       _tileFocus!
-        ..at = camera.screenOffsetToLatLng(focusPoint)
-        ..crs = camera.crs;
+        ..crs = camera.crs
+        ..at = at != null && camera.visibleBounds.contains(at)
+            ? at
+            // `screenOffsetToLatLng` measures against the size before the
+            // map is turned; the turned box is larger and would move the
+            // point, to the far side when the map is upside down.
+            : camera.screenOffsetToLatLng(
+                options.tileFocus.alongSize(camera.nonRotatedSize));
       // Labels are baked right side up for the map rotation in 45° steps.
       // A new step changes the additional options, so TileLayer requests the
       // tiles again in place, without removing the ones on screen.

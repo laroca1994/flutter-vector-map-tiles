@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart' show Alignment;
 import 'package:flutter_map/flutter_map.dart' show TileUpdateTransformer;
+import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:vector_tile_renderer/vector_tile_renderer.dart';
 
 import 'io/io.dart';
@@ -32,6 +33,7 @@ class VectorTileLayerOptions {
   final Future<Directory> Function()? cacheFolder;
   final TileUpdateTransformer? tileUpdateTransformer;
   final Alignment tileFocus;
+  final LatLng? tileFocusAt;
 
   VectorTileLayerOptions(vmt.VectorTileLayer layer)
       : controller = layer.controller,
@@ -55,7 +57,8 @@ class VectorTileLayerOptions {
         maximumZoom = layer.maximumZoom,
         cacheFolder = layer.cacheFolder,
         tileUpdateTransformer = layer.tileUpdateTransformer,
-        tileFocus = layer.tileFocus;
+        tileFocus = layer.tileFocus,
+        tileFocusAt = layer.tileFocusAt;
 
   bool hasRenderDifferences(VectorTileLayerOptions other) =>
       other.theme.id != theme.id ||

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:vector_tile_renderer/vector_tile_renderer.dart';
 
 import 'extensions.dart';
@@ -142,6 +143,11 @@ class VectorTileLayer extends StatelessWidget {
   /// horizon, and the tiles under the camera would load last.
   final Alignment tileFocus;
 
+  /// **Where the tiles that matter most are, on the map**: the user's
+  /// location, for example. Takes the place of [tileFocus] while it is in
+  /// view; out of view, [tileFocus] applies.
+  final LatLng? tileFocusAt;
+
   VectorTileLayer(
       {super.key,
       this.controller,
@@ -165,7 +171,8 @@ class VectorTileLayer extends StatelessWidget {
       this.tileDelay = const Duration(milliseconds: 0),
       this.cacheFolder,
       this.tileUpdateTransformer,
-      this.tileFocus = Alignment.center}) {
+      this.tileFocus = Alignment.center,
+      this.tileFocusAt}) {
     assert(concurrency >= 0 && concurrency <= 100);
     final providers = theme.tileSources
         .map((source) => tileProviders.tileProviderBySource[source])
