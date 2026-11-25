@@ -211,11 +211,10 @@ class TileLoader {
       final image =
           await picture.toImage(size.width.toInt(), size.height.toInt());
       _Stages.lap(stage, 'imagen');
-      // Shown now and stored after: see [_storeLater]. A soft tile is not
-      // stored: the store keeps them sharp.
-      if (scale == _scale) {
-        _storeLater(translation.original, image, upStep);
-      }
+      // Shown now and stored after: see [_storeLater]. A soft tile is stored
+      // as soft: unstored, every one of them was drawn again each time the
+      // labels changed step.
+      _storeLater(translation.original, image, upStep, soft: scale != _scale);
       return ImageInfo(image: image, scale: scale);
     } finally {
       rasterTile.dispose();
@@ -227,15 +226,23 @@ class TileLoader {
   /// (up to 6 s queued behind others): with the tile waiting for it, a
   /// tilted map filled at a dozen tiles a second even with the map
   /// downloaded, and every tile held a render slot the whole time. It is
-  /// only a cache, so past [_maxPendingStores] the oldest waiting are
-  /// skipped: they get drawn again if they are ever asked for.
-  final _pendingStores = <(TileIdentity, Image, int)>[];
+  /// only a cache, so past [_maxPendingPixels] the oldest waiting are
+  /// skipped: they get drawn again if they are ever asked for. The limit is
+  /// in pixels because each one waiting holds its image, and a soft tile is
+  /// a quarter of a sharp one.
+  final _pendingStores = <(TileIdentity, Image, int, bool)>[];
+  var _pendingPixels = 0;
   var _storing = false;
 
-  void _storeLater(TileIdentity tile, Image image, int upStep) {
-    _pendingStores.add((tile, image.clone(), upStep));
-    while (_pendingStores.length > _maxPendingStores) {
-      _pendingStores.removeAt(0).$2.dispose();
+  void _storeLater(TileIdentity tile, Image image, int upStep,
+      {required bool soft}) {
+    _pendingStores.add((tile, image.clone(), upStep, soft));
+    _pendingPixels += image.width * image.height;
+    while (_pendingPixels > _maxPendingPixels && _pendingStores.length > 1) {
+      final dropped = _pendingStores.removeAt(0).$2;
+      _pendingPixels -= dropped.width * dropped.height;
+      dropped.dispose();
+      _Stages.count('guardar_tirada');
     }
     if (!_storing) {
       unawaited(_storePending());
@@ -246,16 +253,22 @@ class TileLoader {
     _storing = true;
     try {
       while (_pendingStores.isNotEmpty) {
-        final (tile, image, upStep) = _pendingStores.removeLast();
+        final (tile, image, upStep, soft) = _pendingStores.removeLast();
+        _pendingPixels -= image.width * image.height;
         final watch = tileProbe ? (Stopwatch()..start()) : null;
         try {
-          await _imageCache.put(tile, image, upStep);
+          final bytes = await _imageCache.encode(image);
+          _Stages.lap(watch, 'g_codificar');
+          if (bytes != null) {
+            _Stages.value('g_kb', bytes.length ~/ 1024);
+            await _imageCache.putBytes(tile, bytes, upStep, soft);
+            _Stages.lap(watch, 'g_escribir');
+          }
         } catch (_) {
           // nothing to do
         } finally {
           image.dispose();
         }
-        _Stages.lap(watch, 'guardar');
       }
     } finally {
       _storing = false;
@@ -282,8 +295,9 @@ class _TileJob {
 // than a flat one: 100 dropped tiles near the camera.
 int _maxOutstandingJobs = 200;
 
-/// How many drawn tiles may wait to be stored. See `TileLoader._storeLater`.
-const _maxPendingStores = 48;
+/// How many pixels of drawn tiles may wait to be stored: 48 sharp tiles of
+/// 512 px, some 50 MB of images. See `TileLoader._storeLater`.
+const _maxPendingPixels = 48 * 512 * 512;
 
 /// Whether to log how long drawing each raster tile takes on the main
 /// isolate: `--dart-define=TILE_PROBE=true`.
@@ -437,8 +451,9 @@ class _FramePacer {
 
 /// **Where a raster tile's time goes** (`TILE_PROBE`, 24-11): per second, the
 /// mean and worst of each stage in ms —waiting for a turn, the stored image,
-/// the queue, the data, drawing, the GPU image, storing it— and how many
-/// tiles were found stored and how many had to be drawn.
+/// the queue, the data, drawing, the GPU image, storing it (encoding, its
+/// size in KB, writing)— and how many tiles were found stored, how many had
+/// to be drawn and how many were dropped unstored.
 class _Stages {
   static final Map<String, (int, int, int)> _laps = {};
   static final Map<String, int> _counts = {};
@@ -452,6 +467,16 @@ class _Stages {
     watch.reset();
     final (n, sum, worst) = _laps[name] ?? (0, 0, 0);
     _laps[name] = (n + 1, sum + ms, ms > worst ? ms : worst);
+    _start();
+  }
+
+  /// A measure that is not a time: mean and worst like a lap.
+  static void value(String name, int value) {
+    if (!tileProbe) {
+      return;
+    }
+    final (n, sum, worst) = _laps[name] ?? (0, 0, 0);
+    _laps[name] = (n + 1, sum + value, value > worst ? value : worst);
     _start();
   }
 

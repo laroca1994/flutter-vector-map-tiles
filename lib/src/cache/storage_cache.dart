@@ -8,7 +8,12 @@ class StorageCache with CacheStats {
   final ByteStorage _storage;
   final Duration _ttl;
   final int _maxSizeInBytes;
-  int _putCount = 0;
+
+  /// What the storage holds, in bytes, as far as this cache knows: counted
+  /// once and kept up with every [put]. Listing the storage to find out
+  /// costs seconds with thousands of entries, and it used to be done every
+  /// 20 writes: tiles waiting to be stored piled up behind it.
+  int? _knownSize;
 
   StorageCache(this._storage, this._ttl, this._maxSizeInBytes);
 
@@ -32,10 +37,25 @@ class StorageCache with CacheStats {
   }
 
   Future<void> put(String key, Uint8List data) async {
-    if (++_putCount % 20 == 0) {
-      await _applyMaxSize();
-    }
     await _storage.write(key, data);
+    // An entry written over counts twice: it only brings the next count
+    // forward, and that one is exact.
+    final size = (_knownSize ?? await _countSize()) + data.length;
+    _knownSize = size;
+    if (size > _maxSizeInBytes) {
+      // With room to spare, so that the next writes do not list it again.
+      await _applyMaxSize(target: _maxSizeInBytes * 4 ~/ 5);
+    }
+  }
+
+  Future<int> _countSize() async {
+    try {
+      final entries = await _storage.list();
+      return entries.fold<int>(0, (sum, e) => sum + e.size);
+    } catch (e) {
+      // ignore, race condition directory may have been deleted
+      return 0;
+    }
   }
 
   Future<bool> exists(String key) => _storage.exists(key);
@@ -56,7 +76,9 @@ class StorageCache with CacheStats {
     }
   }
 
-  Future<void> _applyMaxSize() async {
+  /// Removes the entries used longest ago until the storage is down to
+  /// [target] bytes, when it holds more than the maximum.
+  Future<void> _applyMaxSize({int? target}) async {
     final entries = await _storage.list();
     int size = entries.isEmpty
         ? 0
@@ -68,7 +90,7 @@ class StorageCache with CacheStats {
         try {
           await _storage.delete(entry.path);
           size -= entry.size;
-          if (size <= _maxSizeInBytes) {
+          if (size <= (target ?? _maxSizeInBytes)) {
             break;
           }
         } catch (e) {
@@ -76,6 +98,7 @@ class StorageCache with CacheStats {
         }
       }
     }
+    _knownSize = size;
   }
 
   Future<void> _expireIfExceedsTtl(ByteStorageEntry entity) async {
