@@ -50,6 +50,17 @@ class TileFocus {
   /// waiting tile against it, and it only changes when [at] does.
   final Map<(int, double), Offset> _projected = {};
 
+  /// How far from the focus tiles are drawn sharp, in tiles; `null` draws
+  /// them all sharp. See `VectorTileLayer.sharpTileRadius`.
+  double? sharpRadius;
+
+  /// Whether the tile [x], [y] at [z] is drawn sharp: within [sharpRadius]
+  /// of the focus, or every tile without a radius or a focus.
+  bool isSharp(int x, int y, int z, double tileSize) {
+    final radius = sharpRadius;
+    return radius == null || distanceTo(x, y, z, tileSize) <= radius * radius;
+  }
+
   LatLng? get at => _at;
   set at(LatLng? value) {
     if (value != _at) {

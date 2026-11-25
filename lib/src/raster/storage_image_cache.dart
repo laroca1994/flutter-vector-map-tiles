@@ -16,13 +16,15 @@ class StorageImageCache {
         .replaceAll(RegExp(r'[^a-zA-Z0-9.-]'), '-');
   }
 
-  Future<Image?> retrieve(TileIdentity tile, [int upStep = 0]) async {
+  /// The stored image of [tile], decoded at [size] pixels square when given.
+  Future<Image?> retrieve(TileIdentity tile,
+      [int upStep = 0, int? size]) async {
     String key = _key(tile, upStep);
     final cached = await delegate.retrieve(key);
     if (cached != null) {
       final bytes = Uint8List.fromList(cached);
       try {
-        return await imageFrom(bytes: bytes);
+        return await imageFrom(bytes: bytes, size: size);
       } catch (error, stack) {
         // in case the byte data is invalid, discard and remove the cached value
         // ignore: avoid_print

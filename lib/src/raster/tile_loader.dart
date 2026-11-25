@@ -16,6 +16,7 @@ import '../rendering/tile_renderer.dart';
 import '../stream/tile_supplier.dart';
 import '../stream/tile_supplier_raster.dart';
 import 'resubmit.dart';
+import 'soft_tiles.dart';
 import 'storage_image_cache.dart';
 import 'tile_priority.dart';
 
@@ -36,6 +37,9 @@ class TileLoader {
   /// Where the tiles that matter most are. See [TileFocus].
   final focus = TileFocus();
 
+  /// The tiles drawn soft, to send again sharp. See [SoftTiles].
+  late final _softTiles = SoftTiles(focus);
+
   TileLoader(
       this._theme,
       this._sprites,
@@ -53,23 +57,46 @@ class TileLoader {
         maxQueueSize: _maxOutstandingJobs);
   }
 
-  Future<ImageInfo> loadTile(TileCoordinates coords, TileLayer options,
-      bool Function() cancelled) async {
+  /// The image of the tile at [coords]. Out of [TileFocus.sharpRadius] it is
+  /// drawn soft, and [onSharper], when given, gets the sharp one later, once
+  /// the focus comes near (see [SoftTiles]).
+  Future<ImageInfo> loadTile(
+      TileCoordinates coords, TileLayer options, bool Function() cancelled,
+      [void Function(ImageInfo sharp)? onSharper]) async {
     final requestedTile =
         TileIdentity(coords.z.toInt(), coords.x.toInt(), coords.y.toInt());
+    final tileSize = options.tileDimension.toDouble();
+    final upStep = int.tryParse(options.additionalOptions['up'] ?? '') ?? 0;
+    final sharp = focus.isSharp(
+        requestedTile.x, requestedTile.y, requestedTile.z, tileSize);
+    final info =
+        await _load(requestedTile, tileSize, upStep, cancelled, sharp: sharp);
+    if (!sharp && onSharper != null) {
+      _softTiles.add(
+          TileTicket(requestedTile.x, requestedTile.y, requestedTile.z,
+              tileSize, focus, cancelled: cancelled),
+          () => _load(requestedTile, tileSize, upStep, cancelled, sharp: true)
+              .then(onSharper, onError: (Object _) {}));
+    }
+    return info;
+  }
+
+  Future<ImageInfo> _load(TileIdentity requestedTile, double tileSize,
+      int upStep, bool Function() cancelled,
+      {required bool sharp}) async {
     var requestZoom = requestedTile.z;
     if (_tileOffset.zoomOffset < 0) {
       requestZoom = max(
           1, min(requestZoom + _tileOffset.zoomOffset, _provider.maximumZoom));
     }
-    final upStep = int.tryParse(options.additionalOptions['up'] ?? '') ?? 0;
+    final scale = sharp ? _scale : 1.0;
     if (tileProbe) {
       _TileProbe.addAsked();
     }
     // Its place in line is worked out at every turn, against where the
     // focus is then: in the pacer and in the queue (see [TileTicket]).
-    final ticket = TileTicket(requestedTile.x, requestedTile.y, requestedTile.z,
-        options.tileDimension.toDouble(), focus,
+    final ticket = TileTicket(
+        requestedTile.x, requestedTile.y, requestedTile.z, tileSize, focus,
         cancelled: cancelled);
     // A label step change asks for every visible tile at once; read and
     // decode them a few per frame instead of all in one.
@@ -79,23 +106,25 @@ class TileLoader {
     if (cancelled()) {
       throw CancellationException();
     }
-    final cached = await _imageCache.retrieve(requestedTile, upStep);
+    // Stored sharp; a soft tile decodes it straight at its size.
+    final cached = await _imageCache.retrieve(
+        requestedTile, upStep, sharp ? null : (tileSize * scale).round());
     _Stages.lap(asked, 'guardada');
     if (cached != null) {
-      _Stages.count('acierto');
-      return ImageInfo(image: cached, scale: _scale);
+      _Stages.count(sharp ? 'acierto' : 'acierto_suave');
+      return ImageInfo(image: cached, scale: scale);
     }
-    _Stages.count('falla');
-    final job = _TileJob(requestedTile, requestZoom,
-        options.tileDimension.toDouble(), cancelled, upStep);
+    _Stages.count(sharp ? 'falla' : 'falla_suave');
+    final job = _TileJob(
+        requestedTile, requestZoom, tileSize, cancelled, upStep, scale);
     // A tile dropped by the full queue must be asked for again: otherwise it
     // stays blank while it is on screen.
     return submitUntilDone(
         _jobQueue.ranked(ticket),
         () => Job<_TileJob, ImageInfo>(
-            'render $requestedTile up$upStep', _renderJob, job,
-            deduplicationKey:
-                'render $requestedTile up$upStep ${_theme.id}/$_sourcesKey'),
+            'render $requestedTile up$upStep x$scale', _renderJob, job,
+            deduplicationKey: 'render $requestedTile up$upStep x$scale '
+                '${_theme.id}/$_sourcesKey'),
         cancelled);
   }
 
@@ -104,7 +133,7 @@ class TileLoader {
     final slot = tileProbe ? (Stopwatch()..start()) : null;
     try {
       final info = await _renderTile(job.requestedTile, job.requestZoom,
-          job.tileSize, job.cancelled, job.upStep);
+          job.tileSize, job.cancelled, job.upStep, job.scale);
       _Stages.lap(slot, 'puesto_ok');
       return info;
     } on CancellationException {
@@ -116,8 +145,13 @@ class TileLoader {
     }
   }
 
-  Future<ImageInfo> _renderTile(TileIdentity requestedTile, int requestZoom,
-      double tileSize, bool Function() cancelled, int upStep) async {
+  Future<ImageInfo> _renderTile(
+      TileIdentity requestedTile,
+      int requestZoom,
+      double tileSize,
+      bool Function() cancelled,
+      int upStep,
+      double scale) async {
     if (cancelled()) {
       throw CancellationException();
     }
@@ -157,7 +191,7 @@ class TileLoader {
           spriteImage: spriteAtlas,
           sprites: _sprites);
 
-      final size = Size.square(tileSize * _scale);
+      final size = Size.square(tileSize * scale);
       final rect = Offset.zero & size;
       if (cancelled()) {
         throw CancellationException();
@@ -165,8 +199,8 @@ class TileLoader {
       final watch = tileProbe ? (Stopwatch()..start()) : null;
       final recorder = PictureRecorder();
       final canvas = Canvas(recorder, rect);
-      canvas.scale(_scale);
-      renderer.render(canvas, size / _scale);
+      canvas.scale(scale);
+      renderer.render(canvas, size / scale);
 
       final picture = recorder.endRecording();
       if (watch != null) {
@@ -177,9 +211,12 @@ class TileLoader {
       final image =
           await picture.toImage(size.width.toInt(), size.height.toInt());
       _Stages.lap(stage, 'imagen');
-      // Shown now and stored after: see [_storeLater].
-      _storeLater(translation.original, image, upStep);
-      return ImageInfo(image: image, scale: _scale);
+      // Shown now and stored after: see [_storeLater]. A soft tile is not
+      // stored: the store keeps them sharp.
+      if (scale == _scale) {
+        _storeLater(translation.original, image, upStep);
+      }
+      return ImageInfo(image: image, scale: scale);
     } finally {
       rasterTile.dispose();
     }
@@ -232,12 +269,13 @@ class _TileJob {
   final double tileSize;
   final bool Function() cancelled;
   final int upStep;
+  final double scale;
 
   /// Since it went into the queue, for the probe ([_Stages]).
   final Stopwatch? queued = tileProbe ? (Stopwatch()..start()) : null;
 
   _TileJob(this.requestedTile, this.requestZoom, this.tileSize, this.cancelled,
-      this.upStep);
+      this.upStep, this.scale);
 }
 
 // A tilted map with labels baked for each 45° step asks for many more tiles

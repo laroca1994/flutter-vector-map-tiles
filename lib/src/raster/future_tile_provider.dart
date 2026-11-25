@@ -6,8 +6,10 @@ import 'package:flutter_map/flutter_map.dart';
 
 class FutureTileProvider extends TileProvider {
   final Future<ImageInfo> Function(
-          TileCoordinates coords, TileLayer options, bool Function() cancelled)
-      loader;
+      TileCoordinates coords,
+      TileLayer options,
+      bool Function() cancelled,
+      void Function(ImageInfo sharp) onSharper) loader;
 
   @override
   bool get supportsCancelLoading => true;
@@ -30,8 +32,10 @@ class FutureTileProvider extends TileProvider {
 
 class _FutureImageProvider extends ImageProvider<_FutureImageProvider> {
   final Future<ImageInfo> Function(
-          TileCoordinates coords, TileLayer options, bool Function() cancelled)
-      loader;
+      TileCoordinates coords,
+      TileLayer options,
+      bool Function() cancelled,
+      void Function(ImageInfo sharp) onSharper) loader;
   final TileCoordinates coords;
   final TileLayer options;
   final Future<void> cancelLoading;
@@ -78,7 +82,7 @@ class _FutureImageProvider extends ImageProvider<_FutureImageProvider> {
     final completer = _ImageStreamCompleter();
     unawaited(cancelLoading.whenComplete(cancellation.cancel));
     completer.addOnLastListenerRemovedCallback(cancellation.cancel);
-    _loadImage(cancellation.isCancelled).then((imageInfo) {
+    _loadImage(cancellation.isCancelled, completer).then((imageInfo) {
       completer.quietlySetImage(imageInfo);
     }, onError: (Object error, StackTrace stack) {
       if (error is! CancellationException) {
@@ -88,8 +92,17 @@ class _FutureImageProvider extends ImageProvider<_FutureImageProvider> {
     return completer;
   }
 
-  Future<ImageInfo> _loadImage(bool Function() cancelled) =>
-      loader(coords, options, cancelled);
+  Future<ImageInfo> _loadImage(
+          bool Function() cancelled, _ImageStreamCompleter completer) =>
+      loader(coords, options, cancelled, (sharp) {
+        // A tile drawn soft gets its sharp image in the same stream: the tile
+        // on screen swaps it in place. See `SoftTiles`.
+        if (cancelled()) {
+          sharp.dispose();
+        } else {
+          completer.quietlySetImage(sharp);
+        }
+      });
 }
 
 class _CancellationState {

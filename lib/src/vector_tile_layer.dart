@@ -148,6 +148,16 @@ class VectorTileLayer extends StatelessWidget {
   /// view; out of view, [tileFocus] applies.
   final LatLng? tileFocusAt;
 
+  /// **How far from the focus tiles are drawn sharp**, in tiles; farther ones
+  /// are drawn at half the resolution, a quarter of the memory. `null` draws
+  /// every tile sharp.
+  ///
+  /// For a map drawn tilted, where the far tiles are shown at half their size
+  /// or less, so the half resolution is all the screen can show of them. A
+  /// tile drawn soft is sent again sharp, in place, once the focus comes
+  /// within the radius.
+  final double? sharpTileRadius;
+
   VectorTileLayer(
       {super.key,
       this.controller,
@@ -172,7 +182,8 @@ class VectorTileLayer extends StatelessWidget {
       this.cacheFolder,
       this.tileUpdateTransformer,
       this.tileFocus = Alignment.center,
-      this.tileFocusAt}) {
+      this.tileFocusAt,
+      this.sharpTileRadius}) {
     assert(concurrency >= 0 && concurrency <= 100);
     final providers = theme.tileSources
         .map((source) => tileProviders.tileProviderBySource[source])

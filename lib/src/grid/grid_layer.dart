@@ -196,6 +196,7 @@ class _VectorTileCompositeLayerState extends State<VectorTileCompositeLayer>
       final camera = widget.mapCamera;
       final at = options.tileFocusAt;
       _tileFocus!
+        ..sharpRadius = options.sharpTileRadius
         ..crs = camera.crs
         ..at = at != null && camera.visibleBounds.contains(at)
             ? at

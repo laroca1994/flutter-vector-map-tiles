@@ -34,6 +34,7 @@ class VectorTileLayerOptions {
   final TileUpdateTransformer? tileUpdateTransformer;
   final Alignment tileFocus;
   final LatLng? tileFocusAt;
+  final double? sharpTileRadius;
 
   VectorTileLayerOptions(vmt.VectorTileLayer layer)
       : controller = layer.controller,
@@ -58,7 +59,8 @@ class VectorTileLayerOptions {
         cacheFolder = layer.cacheFolder,
         tileUpdateTransformer = layer.tileUpdateTransformer,
         tileFocus = layer.tileFocus,
-        tileFocusAt = layer.tileFocusAt;
+        tileFocusAt = layer.tileFocusAt,
+        sharpTileRadius = layer.sharpTileRadius;
 
   bool hasRenderDifferences(VectorTileLayerOptions other) =>
       other.theme.id != theme.id ||
