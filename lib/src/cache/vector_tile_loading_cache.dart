@@ -139,7 +139,6 @@ class VectorTileLoadingCache {
         _ThemeTile(
             source: source,
             themeId: _theme.id,
-            dataKey: dataKey,
             bytes: bytes,
             translation: translation),
         cancelled: cancelled,
@@ -167,14 +166,12 @@ class VectorTileLoadingCache {
 class _ThemeTile {
   final String source;
   final String themeId;
-  final String dataKey;
   final Uint8List bytes;
   final TileTranslation? translation;
 
   _ThemeTile(
       {required this.source,
       required this.themeId,
-      required this.dataKey,
       required this.bytes,
       required this.translation});
 }
@@ -185,32 +182,15 @@ Future<void> _setupTheme(Theme theme) async {
   _themeById[theme.id] = theme;
 }
 
-/// **The parents decoded last, in this isolate.** Past the source's top zoom
-/// every tile is cut out of a parent —a z17 tile is one of 64 pieces of its
-/// z14— and decoding the parent was half of a tile's data time on a low-end
-/// phone (450–650 ms, 24-11), done again for each piece. Clipping and
-/// translating build new objects and leave the parent as it was, so the
-/// pieces can share it. Each isolate of the pool keeps its own few: a parent
-/// is decoded at most once per isolate while it is in use. Measured on a
-/// moto g06: a kept parent costs 0 ms, and cutting a piece out of it 0–3 ms.
-final _parents = <String, TileData>{};
-const _maxParents = 4;
-
-TileData _decodeParent(_ThemeTile themeTile) {
-  final key = '${themeTile.themeId}/${themeTile.dataKey}';
-  final kept = _parents.remove(key);
-  if (kept != null) {
-    _parents[key] = kept;
-    return kept;
-  }
-  final decoded = _decode(themeTile);
-  _parents[key] = decoded;
-  if (_parents.length > _maxParents) {
-    _parents.remove(_parents.keys.first);
-  }
-  return decoded;
-}
-
+/// **Each piece decodes its parent whole**, every time. Past the source's top
+/// zoom a tile is cut out of a parent —a z17 tile is one of 64 pieces of its
+/// z14— and that decoding was half of a tile's data time on a moto g06
+/// (24-11). Keeping the last decoded parents in each pool isolate made a
+/// piece cost 0–3 ms, but the pool shares its heap with the UI isolate: with
+/// sixteen decoded parents alive, following a bus on the tilted map had more
+/// than twice the frames over 100 ms with short build times (8 → 19 in one
+/// A/B), the mark of collections stopping every isolate. A slower tile in the
+/// background is better than a stutter on screen.
 TileData _decode(_ThemeTile themeTile) =>
     TileFactory(_themeById[themeTile.themeId]!, const Logger.noop())
         .createTileData(VectorTileReader().read(themeTile.bytes));
@@ -218,9 +198,7 @@ TileData _decode(_ThemeTile themeTile) =>
 TileData _createTile(_ThemeTile themeTile) {
   final translation = themeTile.translation;
   final watch = tileProbe ? (Stopwatch()..start()) : null;
-  final hit = _parents.containsKey('${themeTile.themeId}/${themeTile.dataKey}');
-  var tileData =
-      translation == null ? _decode(themeTile) : _decodeParent(themeTile);
+  var tileData = _decode(themeTile);
   final decodeMs = watch?.elapsedMilliseconds;
   if (translation != null && tileData.layers.isNotEmpty) {
     final clipSize = tileSize.width / translation.fraction;
@@ -237,8 +215,8 @@ TileData _createTile(_ThemeTile themeTile) {
   }
   if (watch != null) {
     // Desde el isolate: lo que cuesta de verdad, sin la espera ni el viaje.
-    debugPrint('[madre] ${hit ? 'guardada' : 'decodificada'} '
-        'decodificar=$decodeMs recortar=${watch.elapsedMilliseconds - decodeMs!}');
+    debugPrint('[madre] decodificar=$decodeMs '
+        'recortar=${watch.elapsedMilliseconds - decodeMs!}');
   }
   return tileData;
 }
